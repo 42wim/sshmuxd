@@ -5,6 +5,8 @@ hostkey: |
   AwEHoUQDQgAEUvK6aRbBnFVsXvpJ9bwUDEI3c/phJAIsjk2dA+YNiFVQq20Xkefl
   FqPJeBriA2EMGkU2AmKGFK45PwRjKI10bA==
   -----END EC PRIVATE KEY-----
+onlyproxyjump: true
+sshca: ["ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDhKptzvt8h9r6YxY5LCdY1Jn6jRAyayzdDOI2YhIMBkZEeWWDOZqxua5y6wm0kCzszsJGQIWigqnhHP1gVG/wobnSJI+3L11O532DRJ2tbaOwapvoZkOySVeBOE4+RCWH1eAmp4c7TMxk5YItyOMFv7yQ4FnyQNwmqXuJbtAmo8cR4Rhopb4waWTIXsE7BY7G7tUgBe7Q2WDT1A1+NIu+Y54N1fZsTKVz8Bu7XvYnBtVHnMY9U27+B3yBiqBOA00erLZ2ozyybamOyjyX8aI2pUSoYp7LAOlRqYZ2URyps6mQjb9lr5ZMa4QXU5lHazu9TlFi4dESmsEC0BX+Bg5w1Ora1OlGUPJFiTKIFg3lfBnuoA5hB9NdW21As7qvyIzmzmnbm69Wa24t6VEyTwH2SSzYDaxyFEExqV3Id8lMkO1h69W0U4K1wCPIFWD9IDWW0Y1xl4SQL79Y4qyfSKdrspo8hBsfxNXnZRVULaZYQzxVOR11SHuNoTNgq3Tybvhs="]
 
 users:
     - publicKey: "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPoWImSrY0Rt33Rg97HkDS3r7mdcFn5EJUv/dxiRWD9aPQUm8wp7buZDhpjb32Dt2PjKnNB6PrNOj7ORDFYEhRg="
@@ -21,3 +23,5 @@ hosts:
       noAuth: true
     - address: secret.example.com:22
       users: [ "me" ]
+    - address: "*.sub.yourdomain.com:22"
+      sshCertRequired: true
