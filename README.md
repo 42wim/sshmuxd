@@ -1,6 +1,11 @@
-# sshmuxd [![Go Report Card](https://goreportcard.com/badge/kennylevinsen/sshmuxd)](https://goreportcard.com/report/kennylevinsen/sshmuxd)
+# sshmuxd [![Go Report Card](https://goreportcard.com/badge/42wim/sshmuxd)](https://goreportcard.com/report/42wim/sshmuxd)
 
-A SSH "jump host" style proxy, based off the https://github.com/kennylevinsen/sshmux library.
+Forked from https://github.com/kennylevinsen/sshmuxd
+- adds support for globbing of hostnames
+- supports ssh certificates
+- add an OnlyProxyJump option
+
+A SSH "jump host" style proxy, based off the https://github.com/42wim/sshmux library.
 
 So, why not just a jump host? Well, if it's just you and no one else needing access, go ahead. If you, however, want to give more than one person SSH access through your public IP on port N (N often being 22), then you might want something with a bit more access control. Sure, you can make really complicated SSH configs that limit a lot of things for the other users, but they'll always be able to poke around more than you want them to, and it'll be a pain in the butt to maintain.
 
@@ -9,11 +14,7 @@ Thinking it could be done simpler, sshmux and sshmuxd got written. It allows you
 # Installation
 The safest way to install sshmuxd is via git:
 
-	git clone --recursive https://github.com/kennylevinsen/sshmuxd.git $GOPATH/src/github.com/kennylevinsen/sshmuxd
-	cd $GOPATH/src/github.com/kennylevinsen/sshmuxd
-	go install
-
-Dependencies are vendored as git submodules.
+	go install github.com/42wim/sshmuxd
 
 # What does it do?
 
