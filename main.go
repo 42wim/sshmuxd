@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/42wim/sshmux"
@@ -21,7 +22,6 @@ type Host struct {
 	Users           []string `json:"users"`
 	NoAuth          bool     `json:"noAuth"`
 	SSHCertRequired bool     `json:"sshCertRequired"`
-	LocalAddress    string   `json:"localAddress"`
 }
 
 type User struct {
@@ -199,6 +199,11 @@ func createSelected(session *sshmux.Session, remote string) error {
 		username = "unknown user"
 	}
 
+	if !destinationAllowed(remote) {
+		log.Printf("%s: %s tried connecting to %s: destination IP not allowed", session.Conn.RemoteAddr(), username, remote)
+		return errors.New("access denied")
+	}
+
 	if session.User != nil && session.User.PublicKey != nil {
 		if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
 			log.Printf("%s: principals: %s connecting to %s", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote)
@@ -210,6 +215,45 @@ func createSelected(session *sshmux.Session, remote string) error {
 	}
 
 	return nil
+}
+
+func destinationAllowed(remote string) bool {
+	if len(viper.GetStringSlice("allowedIPs")) == 0 {
+		return true
+	}
+
+	var err error
+
+	remote, _, err = net.SplitHostPort(remote)
+	if err != nil {
+		return false
+	}
+
+	address, err := net.LookupHost(remote)
+	if err != nil {
+		fmt.Println("error looking up address for", remote)
+		return false
+	}
+
+	if len(address) == 0 {
+		fmt.Println("no address found for", remote)
+		return false
+	}
+
+	count := 0
+
+	for _, a := range address {
+		for _, ip := range viper.GetStringSlice("allowedIPs") {
+			prefix := netip.MustParsePrefix(ip)
+			if prefix.Contains(netip.MustParseAddr(a)) {
+				count++
+
+				break
+			}
+		}
+	}
+
+	return count == len(address)
 }
 
 func setupViper() {
