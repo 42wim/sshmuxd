@@ -21,6 +21,7 @@ type Host struct {
 	Users           []string `json:"users"`
 	NoAuth          bool     `json:"noAuth"`
 	SSHCertRequired bool     `json:"sshCertRequired"`
+	LocalAddress    string   `json:"localAddress"`
 }
 
 type User struct {
@@ -266,6 +267,23 @@ func setupViperWatch(hosts []Host, users []*sshmux.User, hostSigner ssh.Signer) 
 	})
 }
 
+func getDialer() func(network string, address string) (net.Conn, error) {
+	return func(network string, address string) (net.Conn, error) {
+		if viper.GetString("localAddress") == "" {
+			return net.Dial(network, address)
+		}
+
+		dialer := &net.Dialer{
+			LocalAddr: &net.TCPAddr{
+				IP:   net.ParseIP(viper.GetString("localAddress")),
+				Port: 0,
+			},
+		}
+
+		return dialer.Dial(network, address)
+	}
+}
+
 func main() {
 	setupViper()
 
@@ -299,6 +317,7 @@ func main() {
 	server := sshmux.New(hostSigner, createAuth(users, hasDefaults), createSetup(hosts))
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
 	server.Selected = createSelected
+	server.Dialer = getDialer()
 	// Set up listener
 	l, err := net.Listen("tcp", viper.GetString("address"))
 	if err != nil {
