@@ -218,7 +218,7 @@ func createSelected(session *sshmux.Session, remote string) error {
 }
 
 func destinationAllowed(remote string) bool {
-	if len(viper.GetStringSlice("allowedIPs")) == 0 {
+	if len(viper.GetStringSlice("destipallow")) == 0 {
 		return true
 	}
 
@@ -243,7 +243,7 @@ func destinationAllowed(remote string) bool {
 	count := 0
 
 	for _, a := range address {
-		for _, ip := range viper.GetStringSlice("allowedIPs") {
+		for _, ip := range viper.GetStringSlice("destipallow") {
 			prefix := netip.MustParsePrefix(ip)
 			if prefix.Contains(netip.MustParseAddr(a)) {
 				count++
