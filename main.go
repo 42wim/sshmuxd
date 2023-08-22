@@ -217,6 +217,22 @@ func createSelected(session *sshmux.Session, remote string) error {
 	return nil
 }
 
+func remoteToIPAddresses(remote string) ([]string, error) {
+	var err error
+
+	remote, _, err = net.SplitHostPort(remote)
+	if err != nil {
+		return nil, err
+	}
+
+	address, err := net.LookupHost(remote)
+	if err != nil {
+		return nil, fmt.Errorf("error looking up address for %s", remote)
+	}
+
+	return address, nil
+}
+
 func destinationAllowed(remote string) bool {
 	if len(viper.GetStringSlice("destipallow")) == 0 {
 		return true
@@ -224,14 +240,8 @@ func destinationAllowed(remote string) bool {
 
 	var err error
 
-	remote, _, err = net.SplitHostPort(remote)
+	address, err := remoteToIPAddresses(remote)
 	if err != nil {
-		return false
-	}
-
-	address, err := net.LookupHost(remote)
-	if err != nil {
-		fmt.Println("error looking up address for", remote)
 		return false
 	}
 
@@ -317,9 +327,27 @@ func getDialer() func(network string, address string) (net.Conn, error) {
 			return net.Dial(network, address)
 		}
 
+		hasIPv6dest := false
+
+		addresses, err := remoteToIPAddresses(address)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, a := range addresses {
+			if strings.Contains(a, ":") {
+				hasIPv6dest = true
+			}
+		}
+
+		localAddress := viper.GetString("localAddres")
+		if hasIPv6dest {
+			localAddress = viper.GetString("localAddress6")
+		}
+
 		dialer := &net.Dialer{
 			LocalAddr: &net.TCPAddr{
-				IP:   net.ParseIP(viper.GetString("localAddress")),
+				IP:   net.ParseIP(localAddress),
 				Port: 0,
 			},
 		}
