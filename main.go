@@ -340,7 +340,7 @@ func getDialer() func(network string, address string) (net.Conn, error) {
 			}
 		}
 
-		localAddress := viper.GetString("localAddres")
+		localAddress := viper.GetString("localAddress")
 		if hasIPv6dest {
 			localAddress = viper.GetString("localAddress6")
 		}
