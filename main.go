@@ -13,6 +13,7 @@ import (
 
 	"github.com/42wim/sshmux"
 	"github.com/fsnotify/fsnotify"
+	"github.com/pires/go-proxyproto"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/ssh"
 )
@@ -396,7 +397,9 @@ func main() {
 		panic(err)
 	}
 
-	if err = server.Serve(l); err != nil {
+	proxyListener := &proxyproto.Listener{Listener: l}
+
+	if err = server.Serve(proxyListener); err != nil {
 		panic(err)
 	}
 }
