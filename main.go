@@ -207,7 +207,8 @@ func createSelected(session *sshmux.Session, remote string) error {
 
 	if session.User != nil && session.User.PublicKey != nil {
 		if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
-			log.Printf("%s: principals: %s connecting to %s", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote)
+			addresses, _ := remoteToIPAddresses(remote)
+			log.Printf("%s: principals: %s connecting to %s (%s)", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote, addresses)
 		} else {
 			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
 		}
