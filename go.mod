@@ -3,7 +3,7 @@ module github.com/42wim/sshmuxd
 go 1.20
 
 require (
-	github.com/42wim/sshmux v0.4.0
+	github.com/42wim/sshmux v0.4.1
 	github.com/fsnotify/fsnotify v1.6.0
 	github.com/pires/go-proxyproto v0.7.0
 	github.com/spf13/viper v1.16.0

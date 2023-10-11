@@ -219,6 +219,15 @@ func createSelected(session *sshmux.Session, remote string) error {
 	return nil
 }
 
+func createForwardClose(session *sshmux.Session, remote string) {
+	if session.User != nil && session.User.PublicKey != nil {
+		if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
+			addresses, _ := remoteToIPAddresses(remote)
+			log.Printf("%s: principals: %s disconnecting from %s (%s)", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote, addresses)
+		}
+	}
+}
+
 func remoteToIPAddresses(remote string) ([]string, error) {
 	var err error
 
@@ -389,6 +398,7 @@ func main() {
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
 	server.Selected = createSelected
 	server.Dialer = getDialer()
+	server.ForwardClose = createForwardClose
 	// Set up listener
 	l, err := net.Listen("tcp", viper.GetString("address"))
 	if err != nil {

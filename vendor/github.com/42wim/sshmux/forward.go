@@ -130,6 +130,9 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 	var closer sync.Once
 
 	closeFunc := func() {
+		if s.ForwardClose != nil {
+			s.ForwardClose(session, selected.Address)
+		}
 		channel.Close()
 		conn.Close()
 	}

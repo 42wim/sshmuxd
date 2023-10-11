@@ -89,7 +89,13 @@ type Server struct {
 	// ConnectionTimeout specifies the timeout to use when forwarding a
 	// connection. If zero, a sensible default will be used.
 	ConnectionTimeout time.Duration
-	OnlyProxyJump     bool
+
+	// OnlyProxyJump specifies that we can only use this as a ProxyJump
+	OnlyProxyJump bool
+
+	// ForwardClose is run when the forwarded connection closes.
+	// Main use case is to log connections ending.
+	ForwardClose func(*Session, string)
 
 	sshConfig *ssh.ServerConfig
 }
