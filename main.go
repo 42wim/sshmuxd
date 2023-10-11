@@ -287,7 +287,7 @@ func setupViper() {
 	log.Printf("Config File used: %s", viper.ConfigFileUsed())
 }
 
-func setupViperWatch(hosts []Host, users []*sshmux.User, hostSigner ssh.Signer) {
+func setupViperWatch(hosts []Host, users []*sshmux.User) {
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		log.Println("Config file changed:", e.Name)
@@ -309,16 +309,6 @@ func setupViperWatch(hosts []Host, users []*sshmux.User, hostSigner ssh.Signer) 
 				"Keeping current users list", err)
 		} else {
 			users = u
-		}
-
-		var h ssh.Signer
-
-		h, err = ssh.ParsePrivateKey([]byte(viper.GetString("hostkey")))
-		if err != nil {
-			log.Printf("Error parsing the config file hostkey: %s\n"+
-				"Keeping current hostkey", err)
-		} else {
-			hostSigner = h
 		}
 	})
 }
@@ -372,12 +362,19 @@ func main() {
 		panic(fmt.Errorf("error parsing the config file hosts list: %s", err))
 	}
 
-	hostSigner, err := ssh.ParsePrivateKey([]byte(viper.GetString("hostkey")))
-	if err != nil {
-		panic(err)
+	hostkeys := viper.GetStringSlice("hostkey")
+	var hostSigners []ssh.Signer
+
+	for _, hostkey := range hostkeys {
+		hostSigner, err := ssh.ParsePrivateKey([]byte(hostkey))
+		if err != nil {
+			panic(err)
+		}
+
+		hostSigners = append(hostSigners, hostSigner)
 	}
 
-	setupViperWatch(hosts, users, hostSigner)
+	setupViperWatch(hosts, users)
 
 	hasDefaults := false
 
@@ -388,7 +385,7 @@ func main() {
 		}
 	}
 
-	server := sshmux.New(hostSigner, createAuth(users, hasDefaults), createSetup(hosts))
+	server := sshmux.New(hostSigners, createAuth(users, hasDefaults), createSetup(hosts))
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
 	server.Selected = createSelected
 	server.Dialer = getDialer()

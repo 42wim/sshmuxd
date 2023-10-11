@@ -210,7 +210,7 @@ func (s *Server) auth(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permission
 }
 
 // New returns a Server initialized with the provided signer and callbacks.
-func New(signer ssh.Signer, auth func(ssh.ConnMetadata, ssh.PublicKey) (*User, error), setup func(*Session) error) *Server {
+func New(signers []ssh.Signer, auth func(ssh.ConnMetadata, ssh.PublicKey) (*User, error), setup func(*Session) error) *Server {
 	server := &Server{
 		Authenticator: auth,
 		Setup:         setup,
@@ -220,7 +220,10 @@ func New(signer ssh.Signer, auth func(ssh.ConnMetadata, ssh.PublicKey) (*User, e
 	server.sshConfig = &ssh.ServerConfig{
 		PublicKeyCallback: server.auth,
 	}
-	server.sshConfig.AddHostKey(signer)
+
+	for _, signer := range signers {
+		server.sshConfig.AddHostKey(signer)
+	}
 
 	return server
 }

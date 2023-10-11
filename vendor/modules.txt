@@ -1,4 +1,4 @@
-# github.com/42wim/sshmux v0.3.1-0.20230715221321-2f2ee89c8584
+# github.com/42wim/sshmux v0.4.0
 ## explicit; go 1.20
 github.com/42wim/sshmux
 # github.com/fsnotify/fsnotify v1.6.0
