@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/42wim/sshmux"
 	"github.com/fsnotify/fsnotify"
@@ -107,6 +108,38 @@ func checkCert(c ssh.ConnMetadata, key ssh.PublicKey, cert *ssh.Certificate) (*s
 	}, nil
 }
 
+func getCertPublicKeys(cert *ssh.Certificate) (ssh.PublicKey, ssh.PublicKey) {
+	pks, err := ssh.ParsePublicKey(cert.SignatureKey.Marshal())
+	if err != nil {
+		log.Printf("cert %#v signaturekey parsing failed: %s", cert, err)
+	}
+
+	pk, err := ssh.ParsePublicKey(cert.Key.Marshal())
+	if err != nil {
+		log.Printf("cert %#v publickey parsing failed: %s", cert, err)
+	}
+
+	return pk, pks
+}
+
+func logCertInfo(cert *ssh.Certificate, remote, username string) error {
+	pk, pks := getCertPublicKeys(cert)
+	if pk == nil || pks == nil {
+		return errors.New("access denied - cert incorrect")
+	}
+
+	log.Printf("%s: %s access denied (certificate %s %s ID \"%s\" (serial %d) CA %s %s principals: %s validuntil: %s)",
+		remote, username,
+		pk.Type(), ssh.FingerprintSHA256(pk),
+		cert.KeyId, cert.Serial,
+		pks.Type(), ssh.FingerprintSHA256(pks),
+		strings.Join(cert.ValidPrincipals, ","),
+		time.Unix(int64(cert.ValidBefore), 0),
+	)
+
+	return nil
+}
+
 func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
 	// sshmux setup
 	return func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
@@ -114,7 +147,13 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 		k := key.Marshal()
 
 		if cert, ok := key.(*ssh.Certificate); ok {
-			return checkCert(c, key, cert)
+			sshmuxUser, err := checkCert(c, key, cert)
+			if err != nil {
+				logCertInfo(cert, c.RemoteAddr().String(), c.User())
+				return nil, err
+			}
+
+			return sshmuxUser, nil
 		}
 
 		for i := range users {
@@ -145,7 +184,10 @@ func createSetup(hosts []Host) func(*sshmux.Session) error {
 
 		if session.User != nil && session.User.PublicKey != nil {
 			if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
-				log.Printf("%s: authorized (principals: %s)", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","))
+				err := logCertInfo(cert, session.Conn.RemoteAddr().String(), username)
+				if err != nil {
+					return err
+				}
 			} else {
 				log.Printf("%s: authorized (username: %s)", session.Conn.RemoteAddr(), username)
 			}
@@ -201,14 +243,16 @@ func createSelected(session *sshmux.Session, remote string) error {
 	}
 
 	if !destinationAllowed(remote) {
-		log.Printf("%s: %s tried connecting to %s: destination IP not allowed", session.Conn.RemoteAddr(), username, remote)
+		addresses, _ := remoteToIPAddresses(remote)
+		log.Printf("%s: %s tried connecting to %s: destination IP (%s) not allowed", session.Conn.RemoteAddr(), username, remote, addresses)
+
 		return errors.New("access denied")
 	}
 
 	if session.User != nil && session.User.PublicKey != nil {
-		if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
+		if _, ok := session.User.PublicKey.(*ssh.Certificate); ok {
 			addresses, _ := remoteToIPAddresses(remote)
-			log.Printf("%s: principals: %s connecting to %s (%s)", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote, addresses)
+			log.Printf("%s: %s connecting to %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
 		} else {
 			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
 		}
@@ -220,10 +264,18 @@ func createSelected(session *sshmux.Session, remote string) error {
 }
 
 func createForwardClose(session *sshmux.Session, remote string) {
+	var username string
+
+	if session.User != nil {
+		username = session.User.Name
+	} else {
+		username = "unknown user"
+	}
+
 	if session.User != nil && session.User.PublicKey != nil {
-		if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
+		if _, ok := session.User.PublicKey.(*ssh.Certificate); ok {
 			addresses, _ := remoteToIPAddresses(remote)
-			log.Printf("%s: principals: %s disconnecting from %s (%s)", session.Conn.RemoteAddr(), strings.Join(cert.ValidPrincipals, ","), remote, addresses)
+			log.Printf("%s: %s disconnecting from %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
 		}
 	}
 }
