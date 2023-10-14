@@ -9,7 +9,11 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/42wim/sshmux"
@@ -31,7 +35,10 @@ type User struct {
 	Name      string `json:"name"`
 }
 
-var configFile = flag.String("config", "", "User-supplied configuration file to use")
+var (
+	configFile  = flag.String("config", "", "User-supplied configuration file to use")
+	activeUsers sync.Map
+)
 
 func parseSSHCA() []ssh.PublicKey {
 	var sshCA []ssh.PublicKey
@@ -122,14 +129,14 @@ func getCertPublicKeys(cert *ssh.Certificate) (ssh.PublicKey, ssh.PublicKey) {
 	return pk, pks
 }
 
-func logCertInfo(cert *ssh.Certificate, remote, username string) error {
+func logCertInfo(cert *ssh.Certificate, remote, username, status string) error {
 	pk, pks := getCertPublicKeys(cert)
 	if pk == nil || pks == nil {
 		return errors.New("access denied - cert incorrect")
 	}
 
-	log.Printf("%s: %s access denied (certificate %s %s ID \"%s\" (serial %d) CA %s %s principals: %s validuntil: %s)",
-		remote, username,
+	log.Printf("%s: %s %s (certificate %s %s ID \"%s\" (serial %d) CA %s %s principals: %s validuntil: %s)",
+		remote, username, status,
 		pk.Type(), ssh.FingerprintSHA256(pk),
 		cert.KeyId, cert.Serial,
 		pks.Type(), ssh.FingerprintSHA256(pks),
@@ -149,7 +156,7 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 		if cert, ok := key.(*ssh.Certificate); ok {
 			sshmuxUser, err := checkCert(c, key, cert)
 			if err != nil {
-				logCertInfo(cert, c.RemoteAddr().String(), c.User())
+				logCertInfo(cert, c.RemoteAddr().String(), c.User(), "access denied")
 				return nil, err
 			}
 
@@ -184,7 +191,7 @@ func createSetup(hosts []Host) func(*sshmux.Session) error {
 
 		if session.User != nil && session.User.PublicKey != nil {
 			if cert, ok := session.User.PublicKey.(*ssh.Certificate); ok {
-				err := logCertInfo(cert, session.Conn.RemoteAddr().String(), username)
+				err := logCertInfo(cert, session.Conn.RemoteAddr().String(), username, "authorized")
 				if err != nil {
 					return err
 				}
@@ -260,6 +267,8 @@ func createSelected(session *sshmux.Session, remote string) error {
 		log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
 	}
 
+	activeUsers.Store(username+" "+remote, time.Now().Format(time.RFC3339))
+
 	return nil
 }
 
@@ -278,6 +287,8 @@ func createForwardClose(session *sshmux.Session, remote string) {
 			log.Printf("%s: %s disconnecting from %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
 		}
 	}
+
+	activeUsers.Delete(username + " " + remote)
 }
 
 func remoteToIPAddresses(remote string) ([]string, error) {
@@ -327,6 +338,19 @@ func destinationAllowed(remote string) bool {
 	}
 
 	return count == len(address)
+}
+
+func signalHandler(signal os.Signal) {
+	if signal == syscall.SIGUSR1 {
+		log.Println("Active users/connections")
+		i := 1
+		activeUsers.Range(func(key, value any) bool {
+			log.Printf("%d) %s %s", i, key, value)
+			i++
+
+			return true
+		})
+	}
 }
 
 func setupViper() {
@@ -445,6 +469,16 @@ func main() {
 			break
 		}
 	}
+
+	sigchnl := make(chan os.Signal, 1)
+	signal.Notify(sigchnl, syscall.SIGUSR1)
+
+	go func() {
+		for {
+			s := <-sigchnl
+			signalHandler(s)
+		}
+	}()
 
 	server := sshmux.New(hostSigners, createAuth(users, hasDefaults), createSetup(hosts))
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
