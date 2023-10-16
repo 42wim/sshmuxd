@@ -180,7 +180,7 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 	}
 }
 
-func createSetup(hosts []Host) func(*sshmux.Session) error {
+func createSetup(hosts *[]Host) func(*sshmux.Session) error {
 	return func(session *sshmux.Session) error {
 		var username string
 		if session.User != nil {
@@ -203,7 +203,7 @@ func createSetup(hosts []Host) func(*sshmux.Session) error {
 		}
 
 	outer:
-		for _, h := range hosts {
+		for _, h := range *hosts {
 			switch {
 			case h.NoAuth:
 				session.Remotes = append(session.Remotes, &sshmux.Remote{
@@ -238,38 +238,6 @@ func createSetup(hosts []Host) func(*sshmux.Session) error {
 
 		return nil
 	}
-}
-
-func createSelected(session *sshmux.Session, remote string) error {
-	var username string
-
-	if session.User != nil {
-		username = session.User.Name
-	} else {
-		username = "unknown user"
-	}
-
-	if !destinationAllowed(remote) {
-		addresses, _ := remoteToIPAddresses(remote)
-		log.Printf("%s: %s tried connecting to %s: destination IP (%s) not allowed", session.Conn.RemoteAddr(), username, remote, addresses)
-
-		return errors.New("access denied")
-	}
-
-	if session.User != nil && session.User.PublicKey != nil {
-		if _, ok := session.User.PublicKey.(*ssh.Certificate); ok {
-			addresses, _ := remoteToIPAddresses(remote)
-			log.Printf("%s: %s connecting to %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
-		} else {
-			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
-		}
-	} else {
-		log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
-	}
-
-	activeUsers.Store(username+" "+remote, time.Now().Format(time.RFC3339))
-
-	return nil
 }
 
 func createForwardClose(session *sshmux.Session, remote string) {
@@ -343,7 +311,9 @@ func destinationAllowed(remote string) bool {
 func signalHandler(signal os.Signal) {
 	if signal == syscall.SIGUSR1 {
 		log.Println("Active users/connections")
+
 		i := 1
+
 		activeUsers.Range(func(key, value any) bool {
 			log.Printf("%d) %s %s", i, key, value)
 			i++
@@ -372,7 +342,7 @@ func setupViper() {
 	log.Printf("Config File used: %s", viper.ConfigFileUsed())
 }
 
-func setupViperWatch(hosts []Host, users []*sshmux.User) {
+func setupViperWatch(hosts *[]Host, users []*sshmux.User, rules *Rules) {
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		log.Println("Config file changed:", e.Name)
@@ -383,7 +353,7 @@ func setupViperWatch(hosts []Host, users []*sshmux.User) {
 			log.Printf("Error parsing the config file hosts list: %s\n"+
 				"Keeping current host list", err)
 		} else {
-			hosts = nh
+			*hosts = nh
 			log.Printf("New hosts list: %+v\n", hosts)
 		}
 
@@ -394,6 +364,18 @@ func setupViperWatch(hosts []Host, users []*sshmux.User) {
 				"Keeping current users list", err)
 		} else {
 			users = u
+		}
+
+		if r, err := parseRules(); err != nil {
+			log.Printf("Error parsing the config file rules: %s\n"+
+				"Keeping current rules", err)
+		} else {
+			for _, r := range *rules {
+				nh = append(nh, r.Hosts...)
+			}
+
+			*hosts = nh
+			*rules = r
 		}
 	})
 }
@@ -447,6 +429,15 @@ func main() {
 		panic(fmt.Errorf("error parsing the config file hosts list: %s", err))
 	}
 
+	rules, err := parseRules()
+	if err != nil {
+		panic(fmt.Errorf("error parsing the config file rules list: %s", err))
+	}
+
+	for _, r := range rules {
+		hosts = append(hosts, r.Hosts...)
+	}
+
 	hostkeys := viper.GetStringSlice("hostkey")
 	var hostSigners []ssh.Signer
 
@@ -459,7 +450,7 @@ func main() {
 		hostSigners = append(hostSigners, hostSigner)
 	}
 
-	setupViperWatch(hosts, users)
+	setupViperWatch(&hosts, users, &rules)
 
 	hasDefaults := false
 
@@ -480,9 +471,9 @@ func main() {
 		}
 	}()
 
-	server := sshmux.New(hostSigners, createAuth(users, hasDefaults), createSetup(hosts))
+	server := sshmux.New(hostSigners, createAuth(users, hasDefaults), createSetup(&hosts))
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
-	server.Selected = createSelected
+	server.Selected = createSelectedWithRules(&rules)
 	server.Dialer = getDialer()
 	server.ForwardClose = createForwardClose
 	// Set up listener
