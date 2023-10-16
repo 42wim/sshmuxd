@@ -43,6 +43,9 @@ type Session struct {
 	// User is the current user, or nil if unknown.
 	User *User
 
+	// Duration
+	Duration time.Duration
+
 	// Remotes is the allowed set of remote hosts.
 	Remotes []*Remote
 

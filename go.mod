@@ -1,9 +1,9 @@
 module github.com/42wim/sshmuxd
 
-go 1.20
+go 1.21
 
 require (
-	github.com/42wim/sshmux v0.4.1
+	github.com/42wim/sshmux v0.4.2
 	github.com/fsnotify/fsnotify v1.6.0
 	github.com/pires/go-proxyproto v0.7.0
 	github.com/ryanuber/go-glob v1.0.0

@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/42wim/sshmux"
 	"github.com/ryanuber/go-glob"
@@ -21,10 +23,12 @@ type Rule struct {
 	Src                      []string       `json:"src"`
 	Dst                      []string       `json:"dst"`
 	Hosts                    []Host         `json:"hosts"`
+	Duration                 string         `json:"duration"`
 	SourceParsed             []netip.Prefix `json:"-"`
 	SourceNomatchParsed      []netip.Prefix `json:"-"`
 	DestinationParsed        []netip.Prefix `json:"-"`
 	DestinationNomatchParsed []netip.Prefix `json:"-"`
+	DurationParsed           time.Duration  `json:"-"`
 }
 
 type Rules []Rule
@@ -55,10 +59,18 @@ func createSelectedWithRules(rules *Rules) func(*sshmux.Session, string) error {
 			return errors.New("access denied")
 		}
 
+		session.Duration = rules.getDuration(username, clientip, remote)
+
 		if session.User != nil && session.User.PublicKey != nil {
 			if _, ok := session.User.PublicKey.(*ssh.Certificate); ok {
 				addresses, _ := remoteToIPAddresses(remote)
-				log.Printf("%s: %s connecting to %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
+				lifetime := "unlimited"
+
+				if session.Duration != 0 {
+					lifetime = session.Duration.String()
+				}
+
+				log.Printf("%s: %s connecting to %s (%s) session lifetime: %s", session.Conn.RemoteAddr(), username, remote, addresses, lifetime)
 			} else {
 				log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
 			}
@@ -82,6 +94,15 @@ func parseRules() (Rules, error) {
 
 	for i := range rules {
 		rule := &rules[i]
+
+		if rule.Duration == "" {
+			rule.Duration = "0s"
+		}
+
+		rule.DurationParsed, err = time.ParseDuration(rule.Duration)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing duration %s: %s", rule.Duration, err)
+		}
 
 		for _, s := range rule.Src {
 			if strings.HasPrefix(s, "!") {
@@ -224,41 +245,83 @@ func (r *Rules) IsAllowed(username, sourceIP, destHost string) bool {
 	return count == len(addresses)
 }
 
-func (r *Rules) isAllowed(username, sourceIP, destIP, destHost string) bool {
+func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
+	addresses, err := remoteToIPAddresses(destHost)
+	if err != nil {
+		log.Printf("dns lookup failed: %s", err)
+		return 0
+	}
+
+	if len(addresses) == 0 {
+		log.Printf("addresses empty for %s lookup", destHost)
+		return 0
+	}
+
+	rules := r.getMatchingRules(username, sourceIP, addresses[0], destHost)
+	if rules == nil {
+		return 0
+	}
+
+	var shortest int64
+	shortest = math.MaxInt64
+
+	for _, rule := range rules {
+		if int64(rule.DurationParsed) < shortest {
+			shortest = int64(rule.DurationParsed)
+		}
+	}
+
+	if shortest == math.MaxInt64 {
+		return 0
+	}
+
+	return time.Duration(shortest)
+}
+
+func (r *Rules) getMatchingRules(username, sourceIP, destIP, destHost string) Rules {
 	userRules := r.findUserRules(username)
 
 	if len(userRules) == 0 {
-		log.Printf("%s: no user rules found for %s", sourceIP, username)
-		return false
+		log.Printf("DEBUG: %s: no user rules found for %s", sourceIP, username)
+		return nil
 	}
 
 	destHostRules := userRules.findDestinationHostRules(destHost)
 
 	if len(destHostRules) == 0 {
-		log.Printf("%s: no destHost rules found for %s %s", sourceIP, destHost, username)
-		return false
+		log.Printf("DEBUG: %s: no destHost rules found for %s %s", sourceIP, destHost, username)
+		return nil
 	}
 
 	sourceRules := destHostRules.findSourceIPRules(sourceIP)
 
 	if len(sourceRules) == 0 {
-		log.Printf("%s: no source rules found for %s", sourceIP, sourceIP)
-		return false
+		log.Printf("DEBUG: %s: no source rules found for %s", sourceIP, sourceIP)
+		return nil
 	}
 
 	destIPNomatchRules := sourceRules.findDestinationNomatchIPRules(destIP)
 
 	if len(destIPNomatchRules) > 0 {
-		log.Printf("%s: destination IP %s is not allowed", sourceIP, destIP)
-		return false
+		log.Printf("DEBUG: %s: destination IP %s is not allowed", sourceIP, destIP)
+		return nil
 	}
 
 	destIPRules := sourceRules.findDestinationIPRules(destIP)
 
 	if len(destIPRules) == 0 {
-		log.Printf("%s: no destip rules found for %s", sourceIP, destIP)
+		log.Printf("DEBUG: %s: no destip rules found for %s", sourceIP, destIP)
+		return nil
+	}
+
+	return destIPRules
+}
+
+func (r *Rules) isAllowed(username, sourceIP, destIP, destHost string) bool {
+	rules := r.getMatchingRules(username, sourceIP, destIP, destHost)
+	if rules == nil {
 		return false
 	}
 
-	return len(destIPRules) != 0
+	return len(rules) != 0
 }

@@ -137,6 +137,13 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 		conn.Close()
 	}
 
+	if session.Duration != 0 {
+		go func() {
+			time.Sleep(session.Duration)
+			conn.Close()
+		}()
+	}
+
 	go func() {
 		io.Copy(channel, conn)
 		closer.Do(closeFunc)

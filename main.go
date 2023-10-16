@@ -252,7 +252,13 @@ func createForwardClose(session *sshmux.Session, remote string) {
 	if session.User != nil && session.User.PublicKey != nil {
 		if _, ok := session.User.PublicKey.(*ssh.Certificate); ok {
 			addresses, _ := remoteToIPAddresses(remote)
-			log.Printf("%s: %s disconnecting from %s (%s)", session.Conn.RemoteAddr(), username, remote, addresses)
+			lifetime := "unlimited"
+
+			if session.Duration != 0 {
+				lifetime = session.Duration.String()
+			}
+
+			log.Printf("%s: %s disconnecting from %s (%s) session lifetime: %s", session.Conn.RemoteAddr(), username, remote, addresses, lifetime)
 		}
 	}
 
