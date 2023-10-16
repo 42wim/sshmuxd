@@ -262,7 +262,7 @@ func createForwardClose(session *sshmux.Session, remote string) {
 		}
 	}
 
-	activeUsers.Delete(username + " " + remote)
+	activeUsers.Delete(username + " " + remote + " " + fmt.Sprintf("%x", session.Conn.SessionID()))
 }
 
 func remoteToIPAddresses(remote string) ([]string, error) {

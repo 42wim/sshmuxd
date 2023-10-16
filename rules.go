@@ -78,7 +78,7 @@ func createSelectedWithRules(rules *Rules) func(*sshmux.Session, string) error {
 			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
 		}
 
-		activeUsers.Store(username+" "+remote, time.Now().Format(time.RFC3339))
+		activeUsers.Store(username+" "+remote+" "+fmt.Sprintf("%x", session.Conn.SessionID()), time.Now().Format(time.RFC3339))
 
 		return nil
 	}
