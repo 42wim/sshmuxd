@@ -1,14 +1,14 @@
 module github.com/42wim/sshmuxd
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/42wim/sshmux v0.4.5
+	github.com/42wim/sshmux v0.4.6
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/ryanuber/go-glob v1.0.0
 	github.com/spf13/viper v1.21.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
