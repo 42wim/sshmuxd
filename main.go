@@ -488,6 +488,8 @@ func main() {
 		panic(err)
 	}
 
+	proxyproto.DefaultPolicy = proxyproto.USE
+
 	proxyListener := &proxyproto.Listener{Listener: l}
 
 	if err = server.Serve(proxyListener); err != nil {
