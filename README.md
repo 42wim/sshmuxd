@@ -143,5 +143,68 @@ You can also use YAML, see sshmuxd.yml for an example.
 }
 ```
 
+## Optional security settings
+
+All of these are optional. Leaving one unset keeps the previous behaviour.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `trustedproxies` | unset | List of CIDRs allowed to send a PROXY protocol header. |
+| `destipallow` | unset | List of CIDRs a destination must resolve into. Unset allows any destination. |
+| `maxconnections` | `0` | Cap on concurrent connections. `0` means unlimited. |
+| `debug` | `false` | Enables per-attempt rule matching output. |
+| `localAddress` / `localAddress6` | unset | Source address to bind when dialing upstreams. |
+
+### trustedproxies
+
+When sshmuxd sits behind a load balancer that speaks the PROXY protocol, set
+this to the balancer's addresses:
+
+```json
+"trustedproxies": [ "10.0.0.0/8", "192.168.1.5/32" ]
+```
+
+A PROXY header is honoured only from a listed peer. Headers from anyone else
+are ignored and the real peer address is used, so direct clients keep working.
+
+If this is left unset, a PROXY header is accepted from **any** peer. That lets
+any client choose the source address used for `src` rule matching and recorded
+in the audit log. A warning is logged at startup when that is the case.
+
+# Security notes
+
+- The config file contains the SSH host private key. Keep it mode `0600`.
+  sshmuxd warns at startup if it is group- or world-accessible.
+- The working directory is searched for `sshmuxd.json`/`.yml` before
+  `$HOME/.sshmuxd` and `/etc/sshmuxd`. Anyone who can write to the directory
+  the daemon is started from controls the host key, CA list, users and rules.
+  Prefer `--config /etc/sshmuxd/sshmuxd.json`.
+- Binding port 22 needs privileges, and sshmuxd does not drop them. Run it
+  under systemd with `User=` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`
+  rather than as root.
+- `SIGTERM` and `SIGINT` shut down gracefully. `SIGUSR1` dumps active sessions.
+
+## Known limitations
+
+- A CA-signed certificate with no `ValidPrincipals` authenticates as whatever
+  username the client asks for. Always issue certificates with explicit
+  principals.
+- There is no certificate revocation list. Removing a CA from `sshca` is the
+  only way to revoke, and it revokes every certificate that CA issued.
+- `sshCertRequired` checks only that a valid certificate was presented, not
+  which principal it belongs to. Any certificate from a configured CA reaches
+  every `sshCertRequired` host.
+- Upstream host keys are not verified on the interactive session-forward path,
+  so that hop can be intercepted. This does not affect `ProxyJump` / `ssh -W`,
+  where the client verifies the upstream host key itself. Prefer `ProxyJump`,
+  which `onlyproxyjump: true` enforces.
+- An empty `rules` list disables rule checking entirely, and an unset
+  `destipallow` allows every destination.
+- Any host with `noAuth: true` enables anonymous access for the whole daemon:
+  an unrecognised public key is accepted and the session is named
+  `unknown user`. Rules with no `users` field also match that session.
+- Host name patterns use `*` globbing, which crosses `.` and `:`. A pattern
+  like `*example.com:22` also matches `evilexample.com:22`.
+
 # More info
 For more details about this project, see the underlying library: http://github.com/kennylevinsen/sshmux
