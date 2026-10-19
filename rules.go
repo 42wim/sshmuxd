@@ -33,8 +33,11 @@ type Rule struct {
 
 type Rules []Rule
 
-func createSelectedWithRules(rules *Rules) func(*sshmux.Session, string) error {
+func createSelectedWithRules() func(*sshmux.Session, string) error {
 	return func(session *sshmux.Session, remote string) error {
+		cfg := activeConfig.Load()
+		rules := cfg.rules
+
 		var username string
 
 		if session.User != nil {
@@ -49,12 +52,12 @@ func createSelectedWithRules(rules *Rules) func(*sshmux.Session, string) error {
 			return errors.New("access denied")
 		}
 
-		if len(*rules) > 0 && !rules.IsAllowed(username, clientip, remote) {
+		if len(rules) > 0 && !rules.IsAllowed(username, clientip, remote) {
 			log.Printf("%s: %s tried connecting to %s: not allowed", session.Conn.RemoteAddr(), username, remote)
 			return errors.New("access denied")
 		}
 
-		if !destinationAllowed(remote) {
+		if !destinationAllowed(remote, cfg.destIPAllow) {
 			log.Printf("%s: %s tried connecting to %s: destination IP not allowed", session.Conn.RemoteAddr(), username, remote)
 			return errors.New("access denied")
 		}

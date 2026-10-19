@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,24 +38,93 @@ type User struct {
 	Name      string `json:"name"`
 }
 
+// config is an immutable snapshot of everything the request path reads.
+// It is replaced wholesale on reload, so a connection never observes a
+// half-applied configuration.
+type config struct {
+	hosts       []Host
+	users       []*sshmux.User
+	rules       Rules
+	sshCA       []ssh.PublicKey
+	destIPAllow []netip.Prefix
+	hasDefaults bool
+}
+
 var (
-	configFile  = flag.String("config", "", "User-supplied configuration file to use")
-	activeUsers sync.Map
+	configFile   = flag.String("config", "", "User-supplied configuration file to use")
+	activeUsers  sync.Map
+	activeConfig atomic.Pointer[config]
 )
 
-func parseSSHCA() []ssh.PublicKey {
+// loadConfig builds a complete snapshot from viper. It either returns a fully
+// valid config or an error, so a bad reload can never be applied partially.
+func loadConfig() (*config, error) {
+	c := &config{}
+
+	if err := viper.UnmarshalKey("hosts", &c.hosts); err != nil {
+		return nil, fmt.Errorf("hosts: %w", err)
+	}
+
+	var err error
+
+	if c.users, err = parseUsers(); err != nil {
+		return nil, fmt.Errorf("users: %w", err)
+	}
+
+	if c.rules, err = parseRules(); err != nil {
+		return nil, fmt.Errorf("rules: %w", err)
+	}
+
+	for _, r := range c.rules {
+		c.hosts = append(c.hosts, r.Hosts...)
+	}
+
+	if c.sshCA, err = parseSSHCA(); err != nil {
+		return nil, fmt.Errorf("sshca: %w", err)
+	}
+
+	if c.destIPAllow, err = parseDestIPAllow(); err != nil {
+		return nil, fmt.Errorf("destipallow: %w", err)
+	}
+
+	for _, h := range c.hosts {
+		if h.NoAuth {
+			c.hasDefaults = true
+			break
+		}
+	}
+
+	return c, nil
+}
+
+func parseSSHCA() ([]ssh.PublicKey, error) {
 	var sshCA []ssh.PublicKey
 
 	for _, caKey := range viper.GetStringSlice("sshca") {
 		pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(caKey))
 		if err != nil {
-			panic(fmt.Sprintf("Failed to parse sshca keys: %s %v", caKey, err))
+			return nil, fmt.Errorf("could not parse CA key %q: %w", caKey, err)
 		}
 
 		sshCA = append(sshCA, pubKey)
 	}
 
-	return sshCA
+	return sshCA, nil
+}
+
+func parseDestIPAllow() ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+
+	for _, p := range viper.GetStringSlice("destipallow") {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse prefix %q: %w", p, err)
+		}
+
+		prefixes = append(prefixes, prefix)
+	}
+
+	return prefixes, nil
 }
 
 func parseUsers() ([]*sshmux.User, error) {
@@ -88,11 +159,11 @@ func parseUsers() ([]*sshmux.User, error) {
 	return users, nil
 }
 
-func checkCert(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
+func checkCert(c ssh.ConnMetadata, key ssh.PublicKey, sshCA []ssh.PublicKey) (*sshmux.User, error) {
 	certChecker := &ssh.CertChecker{
 		IsUserAuthority: func(auth ssh.PublicKey) bool {
 			marshaled := auth.Marshal()
-			for _, k := range parseSSHCA() {
+			for _, k := range sshCA {
 				if bytes.Equal(marshaled, k.Marshal()) {
 					return true
 				}
@@ -146,14 +217,16 @@ func logCertInfo(cert *ssh.Certificate, remote, username, status string) error {
 	return nil
 }
 
-func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
+func createAuth() func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
 	// sshmux setup
 	return func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
+		cfg := activeConfig.Load()
+
 		t := key.Type()
 		k := key.Marshal()
 
 		if cert, ok := key.(*ssh.Certificate); ok {
-			sshmuxUser, err := checkCert(c, key)
+			sshmuxUser, err := checkCert(c, key, cfg.sshCA)
 			if err != nil {
 				logCertInfo(cert, c.RemoteAddr().String(), c.User(), "access denied")
 				return nil, err
@@ -162,14 +235,14 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 			return sshmuxUser, nil
 		}
 
-		for i := range users {
-			candidate := users[i].PublicKey
+		for i := range cfg.users {
+			candidate := cfg.users[i].PublicKey
 			if t == candidate.Type() && bytes.Equal(k, candidate.Marshal()) {
-				return users[i], nil
+				return cfg.users[i], nil
 			}
 		}
 
-		if hasDefaults {
+		if cfg.hasDefaults {
 			return nil, nil
 		}
 
@@ -179,8 +252,10 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 	}
 }
 
-func createSetup(hosts *[]Host) func(*sshmux.Session) error {
+func createSetup() func(*sshmux.Session) error {
 	return func(session *sshmux.Session) error {
+		hosts := activeConfig.Load().hosts
+
 		var username string
 		if session.User != nil {
 			username = session.User.Name
@@ -202,7 +277,7 @@ func createSetup(hosts *[]Host) func(*sshmux.Session) error {
 		}
 
 	outer:
-		for _, h := range *hosts {
+		for _, h := range hosts {
 			switch {
 			case h.NoAuth:
 				session.Remotes = append(session.Remotes, &sshmux.Remote{
@@ -280,12 +355,10 @@ func remoteToIPAddresses(remote string) ([]string, error) {
 	return address, nil
 }
 
-func destinationAllowed(remote string) bool {
-	if len(viper.GetStringSlice("destipallow")) == 0 {
+func destinationAllowed(remote string, allowed []netip.Prefix) bool {
+	if len(allowed) == 0 {
 		return true
 	}
-
-	var err error
 
 	address, err := remoteToIPAddresses(remote)
 	if err != nil {
@@ -293,24 +366,24 @@ func destinationAllowed(remote string) bool {
 	}
 
 	if len(address) == 0 {
-		fmt.Println("no address found for", remote)
+		log.Printf("no address found for %s", remote)
 		return false
 	}
 
-	count := 0
-
+	// Every resolved address must be permitted, so a mixed result set denies.
 	for _, a := range address {
-		for _, ip := range viper.GetStringSlice("destipallow") {
-			prefix := netip.MustParsePrefix(ip)
-			if prefix.Contains(netip.MustParseAddr(a)) {
-				count++
+		addr, err := netip.ParseAddr(a)
+		if err != nil {
+			log.Printf("could not parse resolved address %q for %s: %s", a, remote, err)
+			return false
+		}
 
-				break
-			}
+		if !slices.ContainsFunc(allowed, func(p netip.Prefix) bool { return p.Contains(addr) }) {
+			return false
 		}
 	}
 
-	return count == len(address)
+	return true
 }
 
 // newProxyListener honours PROXY protocol headers only from trustedProxies.
@@ -406,41 +479,23 @@ func setupViper() {
 	warnInsecureConfig(viper.ConfigFileUsed())
 }
 
-func setupViperWatch(hosts *[]Host, users []*sshmux.User, rules *Rules) {
+func setupViperWatch() {
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		log.Println("Config file changed:", e.Name)
-		nh := make([]Host, 0)
 
-		err := viper.UnmarshalKey("hosts", &nh)
+		c, err := loadConfig()
 		if err != nil {
-			log.Printf("Error parsing the config file hosts list: %s\n"+
-				"Keeping current host list", err)
-		} else {
-			*hosts = nh
-			log.Printf("New hosts list: %+v\n", hosts)
+			log.Printf("Error parsing the config file: %s\n"+
+				"Keeping the running configuration", err)
+
+			return
 		}
 
-		var u []*sshmux.User
+		activeConfig.Store(c)
 
-		if u, err = parseUsers(); err != nil {
-			log.Printf("Error parsing the config file users list: %s\n"+
-				"Keeping current users list", err)
-		} else {
-			users = u
-		}
-
-		if r, err := parseRules(); err != nil {
-			log.Printf("Error parsing the config file rules: %s\n"+
-				"Keeping current rules", err)
-		} else {
-			for _, r := range *rules {
-				nh = append(nh, r.Hosts...)
-			}
-
-			*hosts = nh
-			*rules = r
-		}
+		log.Printf("Configuration reloaded: %d hosts, %d users, %d rules, anonymous access: %t",
+			len(c.hosts), len(c.users), len(c.rules), c.hasDefaults)
 	})
 }
 
@@ -482,25 +537,12 @@ func getDialer() func(network string, address string) (net.Conn, error) {
 func main() {
 	setupViper()
 
-	hosts := make([]Host, 0)
-
-	if err := viper.UnmarshalKey("hosts", &hosts); err != nil {
-		panic(fmt.Errorf("error parsing the config file hosts list: %s", err))
-	}
-
-	users, err := parseUsers()
+	cfg, err := loadConfig()
 	if err != nil {
-		panic(fmt.Errorf("error parsing the config file hosts list: %s", err))
+		panic(fmt.Errorf("error parsing the config file: %w", err))
 	}
 
-	rules, err := parseRules()
-	if err != nil {
-		panic(fmt.Errorf("error parsing the config file rules list: %s", err))
-	}
-
-	for _, r := range rules {
-		hosts = append(hosts, r.Hosts...)
-	}
+	activeConfig.Store(cfg)
 
 	hostkeys := viper.GetStringSlice("hostkey")
 	var hostSigners []ssh.Signer
@@ -518,16 +560,7 @@ func main() {
 		panic(errors.New(`no hostkey configured: set "hostkey" to one or more SSH private keys`))
 	}
 
-	setupViperWatch(&hosts, users, &rules)
-
-	hasDefaults := false
-
-	for _, h := range hosts {
-		if h.NoAuth {
-			hasDefaults = true
-			break
-		}
-	}
+	setupViperWatch()
 
 	sigchnl := make(chan os.Signal, 1)
 	signal.Notify(sigchnl, syscall.SIGUSR1)
@@ -539,9 +572,9 @@ func main() {
 		}
 	}()
 
-	server := sshmux.New(hostSigners, createAuth(users, hasDefaults), createSetup(&hosts))
+	server := sshmux.New(hostSigners, createAuth(), createSetup())
 	server.OnlyProxyJump = viper.GetBool("onlyproxyjump")
-	server.Selected = createSelectedWithRules(&rules)
+	server.Selected = createSelectedWithRules()
 	server.Dialer = getDialer()
 	server.ForwardClose = createForwardClose
 	// Set up listener
