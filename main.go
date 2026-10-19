@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"flag"
@@ -569,7 +570,7 @@ func warnInsecureConfig(path string) {
 	}
 }
 
-func setupViper() {
+func setupViper() error {
 	flag.Parse()
 	viper.SetDefault("address", ":22")
 	viper.SetConfigName("sshmuxd")
@@ -578,13 +579,14 @@ func setupViper() {
 	viper.AddConfigPath("/etc/sshmuxd/")
 	viper.SetConfigFile(*configFile)
 
-	err := viper.ReadInConfig()
-	if err != nil {
-		panic(fmt.Errorf("error parsing the config file: %s", err))
+	if err := viper.ReadInConfig(); err != nil {
+		return fmt.Errorf("error parsing the config file: %w", err)
 	}
 
 	log.Printf("Config File used: %s", viper.ConfigFileUsed())
 	warnInsecureConfig(viper.ConfigFileUsed())
+
+	return nil
 }
 
 func setupViperWatch() {
@@ -649,11 +651,20 @@ func getDialer() func(network string, address string) (net.Conn, error) {
 }
 
 func main() {
-	setupViper()
+	if err := run(); err != nil {
+		log.Printf("fatal: %s", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	if err := setupViper(); err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig()
 	if err != nil {
-		panic(fmt.Errorf("error parsing the config file: %w", err))
+		return fmt.Errorf("error parsing the config file: %w", err)
 	}
 
 	activeConfig.Store(cfg)
@@ -664,24 +675,26 @@ func main() {
 	for i, hostkey := range hostkeys {
 		hostSigner, err := ssh.ParsePrivateKey([]byte(hostkey))
 		if err != nil {
-			panic(fmt.Errorf("error parsing hostkey %d: %w", i, err))
+			return fmt.Errorf("error parsing hostkey %d: %w", i, err)
 		}
 
 		hostSigners = append(hostSigners, hostSigner)
 	}
 
 	if len(hostSigners) == 0 {
-		panic(errors.New(`no hostkey configured: set "hostkey" to one or more SSH private keys`))
+		return errors.New(`no hostkey configured: set "hostkey" to one or more SSH private keys`)
 	}
 
 	setupViperWatch()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	sigchnl := make(chan os.Signal, 1)
 	signal.Notify(sigchnl, syscall.SIGUSR1)
 
 	go func() {
-		for {
-			s := <-sigchnl
+		for s := range sigchnl {
 			signalHandler(s)
 		}
 	}()
@@ -691,18 +704,31 @@ func main() {
 	server.Selected = createSelectedWithRules()
 	server.Dialer = getDialer()
 	server.ForwardClose = createForwardClose
+
+	if maxConns := viper.GetInt("maxconnections"); maxConns > 0 {
+		server.MaxConcurrentConns = maxConns
+		log.Printf("Limiting to %d concurrent connections", maxConns)
+	}
+
 	// Set up listener
 	l, err := net.Listen("tcp", viper.GetString("address"))
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	proxyListener, err := newProxyListener(l, viper.GetStringSlice("trustedproxies"))
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	if err = server.Serve(proxyListener); err != nil {
-		panic(err)
+	log.Printf("Listening on %s", viper.GetString("address"))
+
+	err = server.ServeContext(ctx, proxyListener)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, net.ErrClosed) {
+		return err
 	}
+
+	log.Println("Shutdown complete")
+
+	return nil
 }
