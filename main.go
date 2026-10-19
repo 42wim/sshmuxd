@@ -314,6 +314,36 @@ func destinationAllowed(remote string) bool {
 	return count == len(address)
 }
 
+// newProxyListener honours PROXY protocol headers only from trustedProxies.
+// Without that restriction any peer can declare its own source address.
+func newProxyListener(l net.Listener, trustedProxies []string) (net.Listener, error) {
+	proxyListener := &proxyproto.Listener{Listener: l}
+
+	if len(trustedProxies) == 0 {
+		proxyproto.DefaultPolicy = proxyproto.USE
+
+		log.Printf("WARNING: trustedproxies is unset, so a PROXY protocol header is accepted " +
+			"from any peer. Any client can then choose its own source address, which defeats " +
+			"rule \"src\" matching and forges the source address in the audit log. " +
+			"Set trustedproxies to the CIDRs of your load balancers.")
+
+		return proxyListener, nil
+	}
+
+	// Trusted peers may send a header; headers from anyone else are ignored
+	// rather than rejected, so direct clients keep working.
+	policy, err := proxyproto.PolicyFromRanges(trustedProxies, proxyproto.USE, proxyproto.IGNORE)
+	if err != nil {
+		return nil, fmt.Errorf("invalid trustedproxies entry: %w", err)
+	}
+
+	proxyListener.ConnPolicy = policy
+
+	log.Printf("PROXY protocol headers accepted from: %s", strings.Join(trustedProxies, ", "))
+
+	return proxyListener, nil
+}
+
 func signalHandler(signal os.Signal) {
 	if signal == syscall.SIGUSR1 {
 		log.Println("Active users/connections")
@@ -488,9 +518,10 @@ func main() {
 		panic(err)
 	}
 
-	proxyproto.DefaultPolicy = proxyproto.USE
-
-	proxyListener := &proxyproto.Listener{Listener: l}
+	proxyListener, err := newProxyListener(l, viper.GetStringSlice("trustedproxies"))
+	if err != nil {
+		panic(err)
+	}
 
 	if err = server.Serve(proxyListener); err != nil {
 		panic(err)
