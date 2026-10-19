@@ -339,20 +339,69 @@ func createForwardClose(session *sshmux.Session, remote string) {
 	activeUsers.Delete(username + " " + remote + " " + fmt.Sprintf("%x", session.Conn.SessionID()))
 }
 
-func remoteToIPAddresses(remote string) ([]string, error) {
-	var err error
+// A single connection resolves its destination from the rule check, the
+// destipallow check, the dialer and the audit log. Caching briefly collapses
+// those into one lookup, which narrows the window in which a hostname can
+// resolve to a permitted address for the check and another one for the dial.
+const (
+	dnsCacheTTL        = 10 * time.Second
+	dnsCacheMaxEntries = 1024
+)
 
-	remote, _, err = net.SplitHostPort(remote)
+type dnsEntry struct {
+	addresses []string
+	expires   time.Time
+}
+
+var (
+	dnsCacheMu sync.Mutex
+	dnsCache   = make(map[string]dnsEntry)
+)
+
+func lookupHostCached(host string) ([]string, error) {
+	now := time.Now()
+
+	dnsCacheMu.Lock()
+	entry, ok := dnsCache[host]
+	dnsCacheMu.Unlock()
+
+	if ok && now.Before(entry.expires) {
+		return entry.addresses, nil
+	}
+
+	addresses, err := net.LookupHost(host)
+	if err != nil {
+		return nil, fmt.Errorf("error looking up address for %s: %w", host, err)
+	}
+
+	dnsCacheMu.Lock()
+	defer dnsCacheMu.Unlock()
+
+	// Destinations are client-supplied, so the cache needs a ceiling.
+	if len(dnsCache) >= dnsCacheMaxEntries {
+		for k, v := range dnsCache {
+			if !now.Before(v.expires) {
+				delete(dnsCache, k)
+			}
+		}
+
+		if len(dnsCache) >= dnsCacheMaxEntries {
+			clear(dnsCache)
+		}
+	}
+
+	dnsCache[host] = dnsEntry{addresses: addresses, expires: now.Add(dnsCacheTTL)}
+
+	return addresses, nil
+}
+
+func remoteToIPAddresses(remote string) ([]string, error) {
+	host, _, err := net.SplitHostPort(remote)
 	if err != nil {
 		return nil, err
 	}
 
-	address, err := net.LookupHost(remote)
-	if err != nil {
-		return nil, fmt.Errorf("error looking up address for %s", remote)
-	}
-
-	return address, nil
+	return lookupHostCached(host)
 }
 
 func destinationAllowed(remote string, allowed []netip.Prefix) bool {
