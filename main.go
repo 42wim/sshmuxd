@@ -87,7 +87,7 @@ func parseUsers() ([]*sshmux.User, error) {
 	return users, nil
 }
 
-func checkCert(c ssh.ConnMetadata, key ssh.PublicKey, cert *ssh.Certificate) (*sshmux.User, error) {
+func checkCert(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, error) {
 	certChecker := &ssh.CertChecker{
 		IsUserAuthority: func(auth ssh.PublicKey) bool {
 			marshaled := auth.Marshal()
@@ -101,11 +101,9 @@ func checkCert(c ssh.ConnMetadata, key ssh.PublicKey, cert *ssh.Certificate) (*s
 		},
 	}
 
-	if !certChecker.IsUserAuthority(cert.SignatureKey) {
-		return nil, errors.New("access denied")
-	}
-
-	if err := certChecker.CheckCert(c.User(), cert); err != nil {
+	// Authenticate, unlike CheckCert, rejects host certificates and refuses a
+	// cert whose signing authority is unknown.
+	if _, err := certChecker.Authenticate(c, key); err != nil {
 		return nil, errors.New("access denied")
 	}
 
@@ -154,7 +152,7 @@ func createAuth(users []*sshmux.User, hasDefaults bool) func(c ssh.ConnMetadata,
 		k := key.Marshal()
 
 		if cert, ok := key.(*ssh.Certificate); ok {
-			sshmuxUser, err := checkCert(c, key, cert)
+			sshmuxUser, err := checkCert(c, key)
 			if err != nil {
 				logCertInfo(cert, c.RemoteAddr().String(), c.User(), "access denied")
 				return nil, err
