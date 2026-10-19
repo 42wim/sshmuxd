@@ -47,6 +47,8 @@ type config struct {
 	rules       Rules
 	sshCA       []ssh.PublicKey
 	destIPAllow []netip.Prefix
+	localAddr   netip.Addr
+	localAddr6  netip.Addr
 	hasDefaults bool
 }
 
@@ -87,6 +89,14 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("destipallow: %w", err)
 	}
 
+	if c.localAddr, err = parseLocalAddr("localAddress"); err != nil {
+		return nil, err
+	}
+
+	if c.localAddr6, err = parseLocalAddr("localAddress6"); err != nil {
+		return nil, err
+	}
+
 	for _, h := range c.hosts {
 		if h.NoAuth {
 			c.hasDefaults = true
@@ -125,6 +135,22 @@ func parseDestIPAllow() ([]netip.Prefix, error) {
 	}
 
 	return prefixes, nil
+}
+
+// parseLocalAddr validates an egress source address. An unparseable value used
+// to be dropped silently by net.ParseIP, which disabled source binding.
+func parseLocalAddr(key string) (netip.Addr, error) {
+	v := viper.GetString(key)
+	if v == "" {
+		return netip.Addr{}, nil
+	}
+
+	addr, err := netip.ParseAddr(v)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("%s: could not parse %q: %w", key, v, err)
+	}
+
+	return addr, nil
 }
 
 func parseUsers() ([]*sshmux.User, error) {
@@ -346,6 +372,7 @@ func createForwardClose(session *sshmux.Session, remote string) {
 const (
 	dnsCacheTTL        = 10 * time.Second
 	dnsCacheMaxEntries = 1024
+	dialTimeout        = 30 * time.Second
 )
 
 type dnsEntry struct {
@@ -550,33 +577,39 @@ func setupViperWatch() {
 
 func getDialer() func(network string, address string) (net.Conn, error) {
 	return func(network string, address string) (net.Conn, error) {
-		if viper.GetString("localAddress") == "" {
+		cfg := activeConfig.Load()
+
+		if !cfg.localAddr.IsValid() {
 			return net.Dial(network, address)
 		}
-
-		hasIPv6dest := false
 
 		addresses, err := remoteToIPAddresses(address)
 		if err != nil {
 			return nil, err
 		}
 
+		hasIPv6dest := false
+
 		for _, a := range addresses {
-			if strings.Contains(a, ":") {
+			if addr, err := netip.ParseAddr(a); err == nil && addr.Is6() && !addr.Is4In6() {
 				hasIPv6dest = true
+				break
 			}
 		}
 
-		localAddress := viper.GetString("localAddress")
+		localAddr := cfg.localAddr
 		if hasIPv6dest {
-			localAddress = viper.GetString("localAddress6")
+			localAddr = cfg.localAddr6
+		}
+
+		if !localAddr.IsValid() {
+			log.Printf("WARNING: no localAddress6 configured, dialing %s from the default source address", address)
+			return net.Dial(network, address)
 		}
 
 		dialer := &net.Dialer{
-			LocalAddr: &net.TCPAddr{
-				IP:   net.ParseIP(localAddress),
-				Port: 0,
-			},
+			LocalAddr: net.TCPAddrFromAddrPort(netip.AddrPortFrom(localAddr, 0)),
+			Timeout:   dialTimeout,
 		}
 
 		return dialer.Dial(network, address)
