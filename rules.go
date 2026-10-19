@@ -170,17 +170,19 @@ func (r *Rules) findUserRules(username string) Rules {
 	return rules
 }
 
-func (r *Rules) findSourceIPRules(sourceIP string) Rules {
+func (r *Rules) findSourceIPRules(sourceIP netip.Addr) Rules {
 	var rules Rules
 
 	for _, rule := range *r {
 		if len(rule.SourceParsed) == 0 {
 			rules = append(rules, rule)
+			continue
 		}
 
 		for _, s := range rule.SourceParsed {
-			if s.Contains(netip.MustParseAddr(sourceIP)) {
+			if s.Contains(sourceIP) {
 				rules = append(rules, rule)
+				break
 			}
 		}
 	}
@@ -202,13 +204,14 @@ func (r *Rules) findDestinationHostRules(destHost string) Rules {
 	return rules
 }
 
-func (r *Rules) findDestinationNomatchIPRules(destIP string) Rules {
+func (r *Rules) findDestinationNomatchIPRules(destIP netip.Addr) Rules {
 	var rules Rules
 
 	for _, rule := range *r {
 		for _, d := range rule.DestinationNomatchParsed {
-			if d.Contains(netip.MustParseAddr(destIP)) {
+			if d.Contains(destIP) {
 				rules = append(rules, rule)
+				break
 			}
 		}
 	}
@@ -216,13 +219,14 @@ func (r *Rules) findDestinationNomatchIPRules(destIP string) Rules {
 	return rules
 }
 
-func (r *Rules) findDestinationIPRules(destIP string) Rules {
+func (r *Rules) findDestinationIPRules(destIP netip.Addr) Rules {
 	var rules Rules
 
 	for _, rule := range *r {
 		for _, d := range rule.DestinationParsed {
-			if d.Contains(netip.MustParseAddr(destIP)) {
+			if d.Contains(destIP) {
 				rules = append(rules, rule)
+				break
 			}
 		}
 	}
@@ -231,6 +235,12 @@ func (r *Rules) findDestinationIPRules(destIP string) Rules {
 }
 
 func (r *Rules) IsAllowed(username, sourceIP, destHost string) bool {
+	src, err := netip.ParseAddr(sourceIP)
+	if err != nil {
+		log.Printf("could not parse source address %q: %s", sourceIP, err)
+		return false
+	}
+
 	addresses, err := remoteToIPAddresses(destHost)
 	if err != nil {
 		log.Printf("dns lookup failed: %s", err)
@@ -240,7 +250,13 @@ func (r *Rules) IsAllowed(username, sourceIP, destHost string) bool {
 	count := 0
 
 	for _, a := range addresses {
-		if r.isAllowed(username, sourceIP, a, destHost) {
+		dst, err := netip.ParseAddr(a)
+		if err != nil {
+			log.Printf("could not parse resolved address %q for %s: %s", a, destHost, err)
+			return false
+		}
+
+		if r.isAllowed(username, src, dst, destHost) {
 			count++
 		}
 	}
@@ -249,6 +265,12 @@ func (r *Rules) IsAllowed(username, sourceIP, destHost string) bool {
 }
 
 func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
+	src, err := netip.ParseAddr(sourceIP)
+	if err != nil {
+		log.Printf("could not parse source address %q: %s", sourceIP, err)
+		return 0
+	}
+
 	addresses, err := remoteToIPAddresses(destHost)
 	if err != nil {
 		log.Printf("dns lookup failed: %s", err)
@@ -260,7 +282,13 @@ func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
 		return 0
 	}
 
-	rules := r.getMatchingRules(username, sourceIP, addresses[0], destHost)
+	dst, err := netip.ParseAddr(addresses[0])
+	if err != nil {
+		log.Printf("could not parse resolved address %q for %s: %s", addresses[0], destHost, err)
+		return 0
+	}
+
+	rules := r.getMatchingRules(username, src, dst, destHost)
 	if rules == nil {
 		return 0
 	}
@@ -281,7 +309,7 @@ func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
 	return time.Duration(shortest)
 }
 
-func (r *Rules) getMatchingRules(username, sourceIP, destIP, destHost string) Rules {
+func (r *Rules) getMatchingRules(username string, sourceIP, destIP netip.Addr, destHost string) Rules {
 	userRules := r.findUserRules(username)
 
 	if len(userRules) == 0 {
@@ -320,7 +348,7 @@ func (r *Rules) getMatchingRules(username, sourceIP, destIP, destHost string) Ru
 	return destIPRules
 }
 
-func (r *Rules) isAllowed(username, sourceIP, destIP, destHost string) bool {
+func (r *Rules) isAllowed(username string, sourceIP, destIP netip.Addr, destHost string) bool {
 	rules := r.getMatchingRules(username, sourceIP, destIP, destHost)
 	if rules == nil {
 		return false
