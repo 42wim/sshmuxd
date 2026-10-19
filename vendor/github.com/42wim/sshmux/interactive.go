@@ -7,6 +7,12 @@ import (
 	"strconv"
 )
 
+// maxInputLen bounds a single interactive answer, so that a client that never
+// sends a newline cannot grow the buffer without limit.
+const maxInputLen = 1024
+
+var errInputTooLong = errors.New("input too long")
+
 // DefaultInteractive is the default server selection prompt for users during
 // session forward.
 func DefaultInteractive(comm io.ReadWriter, session *Session) (*Remote, error) {
@@ -55,6 +61,11 @@ loop:
 				case 0x03:
 					fmt.Fprintf(comm, "\r\nGoodbye\r\n")
 					return nil, errors.New("user terminated session")
+				}
+
+				if len(buf) >= maxInputLen {
+					fmt.Fprintf(comm, "\r\ninput too long. Please try again\r\n")
+					continue loop
 				}
 
 				buf = append(buf, b[0])
@@ -109,6 +120,10 @@ func StringCallback(comm io.ReadWriter, prompt string, hide bool) (string, error
 
 			if !hide {
 				fmt.Fprintf(comm, "%s", b[0:1])
+			}
+
+			if len(buf) >= maxInputLen {
+				return "", errInputTooLong
 			}
 
 			buf = append(buf, b[0])
@@ -169,6 +184,11 @@ func KeyboardChallenge(comm io.ReadWriter, user, instruction string, questions [
 					fmt.Fprintf(comm, "\r\nGoodbye\r\n")
 					return nil, errors.New("user terminated session")
 				}
+
+				if len(buf) >= maxInputLen {
+					return answers, errInputTooLong
+				}
+
 				buf = append(buf, b[0])
 			}
 

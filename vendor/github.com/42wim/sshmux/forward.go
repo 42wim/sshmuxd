@@ -80,58 +80,82 @@ func (s *Server) ChannelForward(session *Session, newChannel ssh.NewChannel) {
 		selected *Remote
 	)
 
-	ssh.Unmarshal(newChannel.ExtraData(), &msg)
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &msg); err != nil {
+		s.logger().Warn("malformed direct-tcpip request",
+			"remote", session.Conn.RemoteAddr().String(), "error", err)
+		newChannel.Reject(ssh.ConnectionFailed, "malformed direct-tcpip request")
+
+		return
+	}
+
 	address := fmt.Sprintf("%s:%d", msg.RAddr, msg.RPort)
 
+	// A matched remote is dialed at the address the user asked for, so that a
+	// single globbed entry can cover many hosts. Names without a wildcard
+	// compare equal, so this also covers exact matches.
+search:
 	for _, remote := range session.Remotes {
 		for _, name := range remote.Names {
 			if glob.Glob(name, address) {
-				// prepend the selected name to the list of names
-				remote.Names = append([]string{address}, remote.Names...)
-				remote.Address = address
 				selected = remote
-
-				break
-			}
-
-			if name == address {
-				selected = remote
-				break
+				break search
 			}
 		}
 	}
 
 	if selected == nil {
+		s.logger().Info("forward denied",
+			"remote", session.Conn.RemoteAddr().String(),
+			"login", session.Conn.User(),
+			"target", address)
 		newChannel.Reject(ssh.Prohibited, "remote host access denied for user")
+
 		return
 	}
 
+	log := s.logger().With(
+		"remote", session.Conn.RemoteAddr().String(),
+		"login", session.Conn.User(),
+		"target", address,
+	)
+
 	// Log the selection
 	if s.Selected != nil {
-		if err := s.Selected(session, selected.Address); err != nil {
+		if err := s.Selected(session, address); err != nil {
+			log.Info("forward denied by Selected", "error", err)
 			newChannel.Reject(ssh.Prohibited, "access denied")
+
 			return
 		}
 	}
 
-	conn, err := s.Dialer("tcp", selected.Address)
+	conn, err := s.Dialer("tcp", address)
 	if err != nil {
+		log.Warn("upstream dial failed", "error", err)
 		newChannel.Reject(ssh.ConnectionFailed, fmt.Sprintf("error: %v", err))
+
 		return
 	}
 
 	channel, reqs, err := newChannel.Accept()
 	if err != nil {
+		log.Warn("could not accept direct-tcpip channel", "error", err)
+		conn.Close()
+
 		return
 	}
+
+	log.Info("forward opened")
 
 	go ssh.DiscardRequests(reqs)
 
 	var closer sync.Once
 
 	closeFunc := func() {
+		log.Info("forward closed")
+
 		if s.ForwardClose != nil {
-			s.ForwardClose(session, selected.Address)
+			s.ForwardClose(session, address)
 		}
 		channel.Close()
 		conn.Close()
@@ -169,7 +193,9 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	}
 	defer sesschan.Close()
 
-	agentCh := make(chan struct{})
+	// Buffered: the request pump must not block if the agent request arrives
+	// after the wait below has already given up.
+	agentCh := make(chan struct{}, 1)
 
 	// Proxy the channel and its requests
 	maskedReqs := make(chan *ssh.Request, 1)
@@ -182,7 +208,11 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 				if req.WantReply {
 					req.Reply(true, []byte{})
 				}
-				agentCh <- struct{}{}
+
+				select {
+				case agentCh <- struct{}{}:
+				default:
+				}
 
 				continue
 			case "pty-req", "shell":
@@ -258,8 +288,10 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 
 	// Set up the client
 	clientConfig := &ssh.ClientConfig{
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		User:            username,
+		Config:            s.upstreamCryptoConfig(),
+		HostKeyCallback:   s.upstreamHostKeyCallback(),
+		HostKeyAlgorithms: orDefault(s.UpstreamHostKeyAlgorithms, DefaultHostKeyAlgorithms),
+		User:              username,
 		Auth: []ssh.AuthMethod{
 			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
 				comm := rw{Reader: sesschan, Writer: stderr}
@@ -292,16 +324,27 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 		clientConfig.Timeout = s.ConnectionTimeout
 	}
 
+	log := s.logger().With(
+		"remote", session.Conn.RemoteAddr().String(),
+		"login", session.Conn.User(),
+		"target", remote.Address,
+		"upstream_user", username,
+	)
+
 	conn, err := s.Dialer("tcp", remote.Address)
 	if err != nil {
+		log.Warn("upstream dial failed", "error", err)
 		fmt.Fprintf(stderr, "Connect failed: %v\r\n", err)
+
 		return
 	}
 	defer conn.Close()
 
 	clientConn, clientChans, clientReqs, err := ssh.NewClientConn(conn, remote.Address, clientConfig)
 	if err != nil {
+		log.Warn("upstream handshake failed", "error", err)
 		fmt.Fprintf(stderr, "Client connection setup failed: %v\r\n", err)
+
 		return
 	}
 
@@ -310,9 +353,14 @@ func (s *Server) SessionForward(session *Session, newChannel ssh.NewChannel) {
 	// Forward the session channel
 	channel2, reqs2, err := client.OpenChannel("session", []byte{})
 	if err != nil {
+		log.Warn("upstream session channel failed", "error", err)
 		fmt.Fprintf(stderr, "Remote session setup failed: %v\r\n", err)
+
 		return
 	}
+
+	log.Info("session forward opened")
+	defer log.Info("session forward closed")
 
 	proxy(maskedReqs, reqs2, sesschan, channel2)
 }
