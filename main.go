@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ type config struct {
 	localAddr   netip.Addr
 	localAddr6  netip.Addr
 	hasDefaults bool
+	debug       bool
 }
 
 var (
@@ -103,6 +105,8 @@ func loadConfig() (*config, error) {
 			break
 		}
 	}
+
+	c.debug = viper.GetBool("debug")
 
 	return c, nil
 }
@@ -214,15 +218,35 @@ func checkCert(c ssh.ConnMetadata, key ssh.PublicKey, sshCA []ssh.PublicKey) (*s
 func getCertPublicKeys(cert *ssh.Certificate) (ssh.PublicKey, ssh.PublicKey) {
 	pks, err := ssh.ParsePublicKey(cert.SignatureKey.Marshal())
 	if err != nil {
-		log.Printf("cert %#v signaturekey parsing failed: %s", cert, err)
+		log.Printf("cert signaturekey parsing failed: %s", err)
 	}
 
 	pk, err := ssh.ParsePublicKey(cert.Key.Marshal())
 	if err != nil {
-		log.Printf("cert %#v publickey parsing failed: %s", cert, err)
+		log.Printf("cert publickey parsing failed: %s", err)
 	}
 
 	return pk, pks
+}
+
+// sanitise quotes an untrusted value so it cannot forge log lines, and caps its
+// length so a client cannot drive unbounded log volume.
+func sanitise(s string) string {
+	const maxLen = 128
+
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+
+	return strconv.Quote(s)
+}
+
+// debugf logs only when "debug" is enabled, so a denied connection cannot be
+// used to flood the log.
+func debugf(format string, v ...any) {
+	if cfg := activeConfig.Load(); cfg != nil && cfg.debug {
+		log.Printf("DEBUG: "+format, v...)
+	}
 }
 
 func logCertInfo(cert *ssh.Certificate, remote, username, status string) error {
@@ -231,13 +255,18 @@ func logCertInfo(cert *ssh.Certificate, remote, username, status string) error {
 		return errors.New("access denied - cert incorrect")
 	}
 
-	log.Printf("%s: %s %s (certificate %s %s ID \"%s\" (serial %d) CA %s %s principals: %s validuntil: %s)",
-		remote, username, status,
+	validUntil := "never"
+	if cert.ValidBefore != ssh.CertTimeInfinity {
+		validUntil = time.Unix(int64(cert.ValidBefore), 0).String()
+	}
+
+	log.Printf("%s: %s %s (certificate %s %s ID %s (serial %d) CA %s %s principals: %s validuntil: %s)",
+		remote, sanitise(username), status,
 		pk.Type(), ssh.FingerprintSHA256(pk),
-		cert.KeyId, cert.Serial,
+		sanitise(cert.KeyId), cert.Serial,
 		pks.Type(), ssh.FingerprintSHA256(pks),
-		strings.Join(cert.ValidPrincipals, ","),
-		time.Unix(int64(cert.ValidBefore), 0),
+		sanitise(strings.Join(cert.ValidPrincipals, ",")),
+		validUntil,
 	)
 
 	return nil
@@ -254,7 +283,10 @@ func createAuth() func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, err
 		if cert, ok := key.(*ssh.Certificate); ok {
 			sshmuxUser, err := checkCert(c, key, cfg.sshCA)
 			if err != nil {
-				logCertInfo(cert, c.RemoteAddr().String(), c.User(), "access denied")
+				if logErr := logCertInfo(cert, c.RemoteAddr().String(), c.User(), "access denied"); logErr != nil {
+					log.Printf("%s: access denied (username: %s): %s", c.RemoteAddr(), sanitise(c.User()), logErr)
+				}
+
 				return nil, err
 			}
 
@@ -272,7 +304,7 @@ func createAuth() func(c ssh.ConnMetadata, key ssh.PublicKey) (*sshmux.User, err
 			return nil, nil
 		}
 
-		log.Printf("%s: access denied (username: %s)", c.RemoteAddr(), c.User())
+		log.Printf("%s: access denied (username: %s)", c.RemoteAddr(), sanitise(c.User()))
 
 		return nil, errors.New("access denied")
 	}

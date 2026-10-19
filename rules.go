@@ -53,12 +53,12 @@ func createSelectedWithRules() func(*sshmux.Session, string) error {
 		}
 
 		if len(rules) > 0 && !rules.IsAllowed(username, clientip, remote) {
-			log.Printf("%s: %s tried connecting to %s: not allowed", session.Conn.RemoteAddr(), username, remote)
+			log.Printf("%s: %s tried connecting to %s: not allowed", session.Conn.RemoteAddr(), sanitise(username), sanitise(remote))
 			return errors.New("access denied")
 		}
 
 		if !destinationAllowed(remote, cfg.destIPAllow) {
-			log.Printf("%s: %s tried connecting to %s: destination IP not allowed", session.Conn.RemoteAddr(), username, remote)
+			log.Printf("%s: %s tried connecting to %s: destination IP not allowed", session.Conn.RemoteAddr(), sanitise(username), sanitise(remote))
 			return errors.New("access denied")
 		}
 
@@ -73,12 +73,12 @@ func createSelectedWithRules() func(*sshmux.Session, string) error {
 					lifetime = session.Duration.String()
 				}
 
-				log.Printf("%s: %s connecting to %s (%s) session lifetime: %s", session.Conn.RemoteAddr(), username, remote, addresses, lifetime)
+				log.Printf("%s: %s connecting to %s (%s) session lifetime: %s", session.Conn.RemoteAddr(), sanitise(username), sanitise(remote), addresses, lifetime)
 			} else {
-				log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
+				log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), sanitise(username), sanitise(remote))
 			}
 		} else {
-			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), username, remote)
+			log.Printf("%s: %s connecting to %s", session.Conn.RemoteAddr(), sanitise(username), sanitise(remote))
 		}
 
 		activeUsers.Store(username+" "+remote+" "+fmt.Sprintf("%x", session.Conn.SessionID()), time.Now().Format(time.RFC3339))
@@ -317,35 +317,35 @@ func (r *Rules) getMatchingRules(username string, sourceIP, destIP netip.Addr, d
 	userRules := r.findUserRules(username)
 
 	if len(userRules) == 0 {
-		log.Printf("DEBUG: %s: no user rules found for %s", sourceIP, username)
+		debugf("%s: no user rules found for %s", sourceIP, sanitise(username))
 		return nil
 	}
 
 	destHostRules := userRules.findDestinationHostRules(destHost)
 
 	if len(destHostRules) == 0 {
-		log.Printf("DEBUG: %s: no destHost rules found for %s %s", sourceIP, destHost, username)
+		debugf("%s: no destHost rules found for %s %s", sourceIP, sanitise(destHost), sanitise(username))
 		return nil
 	}
 
 	sourceRules := destHostRules.findSourceIPRules(sourceIP)
 
 	if len(sourceRules) == 0 {
-		log.Printf("DEBUG: %s: no source rules found for %s", sourceIP, sourceIP)
+		debugf("%s: no source rules found for %s", sourceIP, sourceIP)
 		return nil
 	}
 
 	destIPNomatchRules := sourceRules.findDestinationNomatchIPRules(destIP)
 
 	if len(destIPNomatchRules) > 0 {
-		log.Printf("DEBUG: %s: destination IP %s is not allowed", sourceIP, destIP)
+		debugf("%s: destination IP %s is not allowed", sourceIP, destIP)
 		return nil
 	}
 
 	destIPRules := sourceRules.findDestinationIPRules(destIP)
 
 	if len(destIPRules) == 0 {
-		log.Printf("DEBUG: %s: no destip rules found for %s", sourceIP, destIP)
+		debugf("%s: no destip rules found for %s", sourceIP, destIP)
 		return nil
 	}
 
