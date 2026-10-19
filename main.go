@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -357,11 +358,39 @@ func signalHandler(signal os.Signal) {
 	}
 }
 
+// warnInsecureConfig reports a config file that other local users can read or
+// replace. It holds the SSH host private key.
+func warnInsecureConfig(path string) {
+	if path == "" {
+		return
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+
+	info, err := os.Stat(abs)
+	if err != nil {
+		log.Printf("WARNING: cannot stat config file %s: %s", abs, err)
+		return
+	}
+
+	if mode := info.Mode().Perm(); mode&0o077 != 0 {
+		log.Printf("WARNING: config file %s is mode %#o but holds the SSH host private key. "+
+			"Restrict it with: chmod 600 %s", abs, mode, abs)
+	}
+
+	if cwd, err := os.Getwd(); err == nil && filepath.Dir(abs) == cwd {
+		log.Printf("WARNING: config file %s was loaded from the working directory, which is "+
+			"searched before $HOME/.sshmuxd and /etc/sshmuxd. Anyone able to write there "+
+			"controls the host key, CA list, user list and rules.", abs)
+	}
+}
+
 func setupViper() {
 	flag.Parse()
 	viper.SetDefault("address", ":22")
-	viper.SetDefault("hostkey", "hostkey")
-	viper.SetDefault("authkeys", "authkeys")
 	viper.SetConfigName("sshmuxd")
 	viper.AddConfigPath(".")
 	viper.AddConfigPath("$HOME/.sshmuxd")
@@ -374,6 +403,7 @@ func setupViper() {
 	}
 
 	log.Printf("Config File used: %s", viper.ConfigFileUsed())
+	warnInsecureConfig(viper.ConfigFileUsed())
 }
 
 func setupViperWatch(hosts *[]Host, users []*sshmux.User, rules *Rules) {
@@ -475,13 +505,17 @@ func main() {
 	hostkeys := viper.GetStringSlice("hostkey")
 	var hostSigners []ssh.Signer
 
-	for _, hostkey := range hostkeys {
+	for i, hostkey := range hostkeys {
 		hostSigner, err := ssh.ParsePrivateKey([]byte(hostkey))
 		if err != nil {
-			panic(err)
+			panic(fmt.Errorf("error parsing hostkey %d: %w", i, err))
 		}
 
 		hostSigners = append(hostSigners, hostSigner)
+	}
+
+	if len(hostSigners) == 0 {
+		panic(errors.New(`no hostkey configured: set "hostkey" to one or more SSH private keys`))
 	}
 
 	setupViperWatch(&hosts, users, &rules)
