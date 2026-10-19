@@ -247,6 +247,12 @@ func (r *Rules) IsAllowed(username, sourceIP, destHost string) bool {
 		return false
 	}
 
+	// Without this, count == len(addresses) would be 0 == 0 and allow.
+	if len(addresses) == 0 {
+		log.Printf("no addresses found for %s", destHost)
+		return false
+	}
+
 	count := 0
 
 	for _, a := range addresses {
@@ -282,23 +288,22 @@ func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
 		return 0
 	}
 
-	dst, err := netip.ParseAddr(addresses[0])
-	if err != nil {
-		log.Printf("could not parse resolved address %q for %s: %s", addresses[0], destHost, err)
-		return 0
-	}
-
-	rules := r.getMatchingRules(username, src, dst, destHost)
-	if rules == nil {
-		return 0
-	}
-
 	var shortest int64
 	shortest = math.MaxInt64
 
-	for _, rule := range rules {
-		if int64(rule.DurationParsed) < shortest {
-			shortest = int64(rule.DurationParsed)
+	// IsAllowed requires every resolved address to pass, so the lifetime has to
+	// come from the same set rather than from addresses[0] alone.
+	for _, a := range addresses {
+		dst, err := netip.ParseAddr(a)
+		if err != nil {
+			log.Printf("could not parse resolved address %q for %s: %s", a, destHost, err)
+			return 0
+		}
+
+		for _, rule := range r.getMatchingRules(username, src, dst, destHost) {
+			if int64(rule.DurationParsed) < shortest {
+				shortest = int64(rule.DurationParsed)
+			}
 		}
 	}
 
@@ -308,7 +313,6 @@ func (r *Rules) getDuration(username, sourceIP, destHost string) time.Duration {
 
 	return time.Duration(shortest)
 }
-
 func (r *Rules) getMatchingRules(username string, sourceIP, destIP netip.Addr, destHost string) Rules {
 	userRules := r.findUserRules(username)
 
