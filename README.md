@@ -95,10 +95,10 @@ You can also use YAML, see sshmuxd.yml for an example.
 	// Listening address as given directly to net.Listen.
 	"address": ":22",
 
-	// Private key to use for built-in SSH server. Make sure you replace all newlines with \n
+	// Private keys to use for built-in SSH server. Make sure you replace all newlines with \n
 	// Generate your own with: ssh-keygen -t ed25519 -f sshmuxd_host_key -N ""
 	// Never reuse a key published in documentation.
-	"hostkey": "-----BEGIN OPENSSH PRIVATE KEY-----\nREPLACE THIS WITH YOUR OWN HOST KEY\n-----END OPENSSH PRIVATE KEY-----",
+	"hostkey": ["-----BEGIN OPENSSH PRIVATE KEY-----\nREPLACE THIS WITH YOUR OWN HOST KEY\n-----END OPENSSH PRIVATE KEY-----"],
 
 	// Authorized keys to use for authenticating users.
 	"users": [

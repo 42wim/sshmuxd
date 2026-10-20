@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"net"
 	"net/netip"
@@ -329,6 +330,71 @@ func TestDestinationAllowed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseHostKeys(t *testing.T) {
+	key := generatePEM(t)
+
+	t.Run("single key list", func(t *testing.T) {
+		viper.Reset()
+		viper.Set("hostkey", []string{key})
+
+		got, err := parseHostKeys()
+		if err != nil {
+			t.Fatalf("single key hostkey rejected: %v", err)
+		}
+
+		if len(got) != 1 {
+			t.Fatalf("got %d signers, want 1", len(got))
+		}
+	})
+
+	t.Run("list form", func(t *testing.T) {
+		viper.Reset()
+		viper.Set("hostkey", []string{key, key})
+
+		got, err := parseHostKeys()
+		if err != nil {
+			t.Fatalf("list hostkey rejected: %v", err)
+		}
+
+		if len(got) != 2 {
+			t.Fatalf("got %d signers, want 2", len(got))
+		}
+	})
+
+	t.Run("missing hostkey is an error", func(t *testing.T) {
+		viper.Reset()
+
+		if _, err := parseHostKeys(); err == nil {
+			t.Fatal("missing hostkey accepted")
+		}
+	})
+
+	t.Run("malformed hostkey is an error", func(t *testing.T) {
+		viper.Reset()
+		viper.Set("hostkey", []string{"not a key"})
+
+		if _, err := parseHostKeys(); err == nil {
+			t.Fatal("malformed hostkey accepted")
+		}
+	})
+}
+
+func generatePEM(t *testing.T) string {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	block, err := ssh.MarshalPrivateKey(priv, "")
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+
+	return string(pem.EncodeToMemory(block))
 }
 
 func TestLoadConfigRejectsInvalidInput(t *testing.T) {

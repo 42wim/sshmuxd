@@ -589,6 +589,25 @@ func setupViper() error {
 	return nil
 }
 
+func parseHostKeys() ([]ssh.Signer, error) {
+	var signers []ssh.Signer
+
+	for i, hostkey := range viper.GetStringSlice("hostkey") {
+		signer, err := ssh.ParsePrivateKey([]byte(hostkey))
+		if err != nil {
+			return nil, fmt.Errorf("error parsing hostkey %d: %w", i, err)
+		}
+
+		signers = append(signers, signer)
+	}
+
+	if len(signers) == 0 {
+		return nil, errors.New(`no hostkey configured: set "hostkey" to a list of one or more SSH private keys`)
+	}
+
+	return signers, nil
+}
+
 func setupViperWatch() {
 	viper.WatchConfig()
 	viper.OnConfigChange(func(e fsnotify.Event) {
@@ -669,20 +688,9 @@ func run() error {
 
 	activeConfig.Store(cfg)
 
-	hostkeys := viper.GetStringSlice("hostkey")
-	var hostSigners []ssh.Signer
-
-	for i, hostkey := range hostkeys {
-		hostSigner, err := ssh.ParsePrivateKey([]byte(hostkey))
-		if err != nil {
-			return fmt.Errorf("error parsing hostkey %d: %w", i, err)
-		}
-
-		hostSigners = append(hostSigners, hostSigner)
-	}
-
-	if len(hostSigners) == 0 {
-		return errors.New(`no hostkey configured: set "hostkey" to one or more SSH private keys`)
+	hostSigners, err := parseHostKeys()
+	if err != nil {
+		return err
 	}
 
 	setupViperWatch()
